@@ -502,11 +502,17 @@ struct DBOptions {
   bool flush_verify_memtable_count = true;
 
   // If true, the log numbers and sizes of the synced WALs are tracked
-  // in MANIFEST, then during DB recovery, if a synced WAL is missing
+  // in MANIFEST. During DB recovery, if a synced WAL is missing
   // from disk, or the WAL's size does not match the recorded size in
   // MANIFEST, an error will be reported and the recovery will be aborted.
   //
+  // This is one additional protection against WAL corruption besides the
+  // per-WAL-entry checksum.
+  //
   // Note that this option does not work with secondary instance.
+  // Currently, only syncing closed WALs are tracked. Calling `DB::SyncWAL()`,
+  // etc. or writing with `WriteOptions::sync=true` to sync the live WAL is not
+  // tracked for performance/efficiency reasons.
   //
   // Default: false
   bool track_and_verify_wals_in_manifest = false;
@@ -1710,7 +1716,19 @@ struct FlushOptions {
   // is performed by someone else (foreground call or background thread).
   // Default: false
   bool allow_write_stall;
-  FlushOptions() : wait(true), allow_write_stall(false) {}
+  // Only switch mutable memtable if its size is no smaller than this parameter.
+  // Zero is no-op.
+  // Default: 0
+  uint64_t min_size_to_flush;
+  // Used by RocksDB internally.
+  // Default: false
+  bool _write_stopped;
+
+  FlushOptions()
+      : wait(true),
+        allow_write_stall(false),
+        min_size_to_flush(0),
+        _write_stopped(false) {}
 };
 
 // Create a Logger from provided DBOptions
@@ -1778,7 +1796,7 @@ struct CompactRangeOptions {
   uint32_t max_subcompactions = 0;
   // Set user-defined timestamp low bound, the data with older timestamp than
   // low bound maybe GCed by compaction. Default: nullptr
-  Slice* full_history_ts_low = nullptr;
+  const Slice* full_history_ts_low = nullptr;
 
   // Allows cancellation of an in-progress manual compaction.
   //
