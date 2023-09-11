@@ -1304,6 +1304,11 @@ Status DBImpl::PreprocessWrite(const WriteOptions& write_options,
   if (UNLIKELY(status.ok() && write_buffer_manager_->ShouldFlush())) {
     write_buffer_manager_->MaybeFlush(this);
   }
+  for (auto write_buffer_manager : cf_based_write_buffer_manager_) {
+    if (UNLIKELY(status.ok() && write_buffer_manager->ShouldFlush())) {
+      write_buffer_manager->MaybeFlush(this);
+    }
+  }
 
   if (UNLIKELY(status.ok() && !trim_history_scheduler_.Empty())) {
     InstrumentedMutexLock l(&mutex_);
@@ -2249,11 +2254,16 @@ Status DBImpl::SwitchMemtable(ColumnFamilyData* cfd, WriteContext* context) {
                                      mutable_cf_options);
 
 #ifndef ROCKSDB_LITE
-  mutex_.Unlock();
+  // From above, the memtable has been converted to imm memtable and apended to
+  // memlist. If we unlock here, it has possibility to be picked by a concurrent
+  // flush job. Furthermore, that flush job may even be completed and calls
+  // NotifyOnFlushCompleted before the following NotifyOnMemTableSealed which
+  // can cause troubles.
+  // So, unlike Facebook/Rocksdb, we does not unlock here.
+
   // Notify client that memtable is sealed, now that we have successfully
   // installed a new memtable
   NotifyOnMemTableSealed(cfd, memtable_info);
-  mutex_.Lock();
 #endif  // ROCKSDB_LITE
   // It is possible that we got here without checking the value of i_os, but
   // that is okay.  If we did, it most likely means that s was already an error.
@@ -2278,6 +2288,9 @@ size_t DBImpl::GetWalPreallocateBlockSize(uint64_t write_buffer_size) const {
   if (immutable_db_options_.write_buffer_manager) {
     size_t buffer_size =
         immutable_db_options_.write_buffer_manager->flush_size();
+    for (auto manager : cf_based_write_buffer_manager_) {
+      buffer_size += manager->flush_size();
+    }
     if (buffer_size > 0) {
       bsize = std::min<size_t>(bsize, buffer_size);
     }

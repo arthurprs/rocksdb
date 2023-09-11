@@ -86,6 +86,7 @@ class WriteCallback;
 struct JobContext;
 struct ExternalSstFileInfo;
 struct MemTableInfo;
+class WriteBlocker;
 
 // Class to maintain directories for all database paths other than main one.
 class Directories {
@@ -669,12 +670,16 @@ class DBImpl : public DB {
   // max_file_num_to_ignore allows bottom level compaction to filter out newly
   // compacted SST files. Setting max_file_num_to_ignore to kMaxUint64 will
   // disable the filtering
+  // If `final_output_level` is not nullptr, it is set to manual compaction's
+  // output level if returned status is OK, and it may or may not be set to
+  // manual compaction's output level if returned status is not OK.
   Status RunManualCompaction(ColumnFamilyData* cfd, int input_level,
                              int output_level,
                              const CompactRangeOptions& compact_range_options,
                              const Slice* begin, const Slice* end,
                              bool exclusive, bool disallow_trivial_move,
-                             uint64_t max_file_num_to_ignore);
+                             uint64_t max_file_num_to_ignore,
+                             int* final_output_level = nullptr);
 
   // Return an internal iterator over the current state of the database.
   // The keys of this iterator are internal keys (see format.h).
@@ -957,6 +962,14 @@ class DBImpl : public DB {
                      const std::vector<ColumnFamilyDescriptor>& column_families,
                      std::vector<ColumnFamilyHandle*>* handles, DB** dbptr,
                      const bool seq_per_batch, const bool batch_per_txn);
+
+  // Validate `rhs` can be merged into this DB with given merge options.
+  Status ValidateForMerge(const MergeInstanceOptions& merge_options,
+                          DBImpl* rhs);
+
+  Status MergeDisjointInstances(const MergeInstanceOptions& merge_options,
+                                const std::vector<DB*>& instances) override;
+  Status CheckInRange(const Slice* begin, const Slice* end) override;
 
   static IOStatus CreateAndNewDirectory(
       FileSystem* fs, const std::string& dirname,
@@ -1432,6 +1445,7 @@ class DBImpl : public DB {
   friend class WriteBatchWithIndex;
   friend class WriteUnpreparedTxnDB;
   friend class WriteUnpreparedTxn;
+  friend class WriteBlocker;
 
 #ifndef ROCKSDB_LITE
   friend class ForwardIterator;
@@ -2274,6 +2288,10 @@ class DBImpl : public DB {
   Directories directories_;
 
   WriteBufferManager* write_buffer_manager_;
+  // For simplicity, CF based write buffer manager does not support stall the
+  // write.
+  // Note: It's only modifed in Open, so mutex is not needed.
+  autovector<WriteBufferManager*> cf_based_write_buffer_manager_;
 
   WriteThread write_thread_;
   WriteBatch tmp_batch_;
